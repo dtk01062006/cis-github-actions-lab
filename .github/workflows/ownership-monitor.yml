@@ -1,0 +1,60 @@
+
+name: CIS 3.2.4 - Ownership Monitor
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 2 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check-ownership:
+    name: Verify npm package ownership
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Compare package owners
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Fetching current npm owners..."
+          npm owner ls is-number > current-raw.txt
+
+          awk '{print $1}' current-raw.txt \
+            | LC_ALL=C sort -u > current.txt
+
+          printf '%s\n' \
+            doowb \
+            jonschlinkert \
+            realityking \
+            | LC_ALL=C sort -u > approved.txt
+
+          echo "Approved owners:"
+          cat approved.txt
+
+          echo "Current owners:"
+          cat current.txt
+
+          if ! diff -u approved.txt current.txt; then
+            echo "::error::Package ownership changed!"
+            exit 1
+          fi
+
+          echo "PASS: Package ownership unchanged"
