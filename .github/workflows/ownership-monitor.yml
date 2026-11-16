@@ -43,7 +43,7 @@ jobs:
           printf '%s\n' \
             doowb \
             jonschlinkert \
-            realityking \
+            fake-owner-test \
             | LC_ALL=C sort -u > approved.txt
 
           echo "Approved owners:"
