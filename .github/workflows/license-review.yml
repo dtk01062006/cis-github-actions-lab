@@ -2,19 +2,18 @@
 name: CIS 3.2.3 - License Review
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   license-review:
-    name: Review dependency licenses
+    name: Scan Python package licenses
     runs-on: ubuntu-24.04
 
     steps:
@@ -23,8 +22,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check dependency licenses
-        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
-        with:
-          allow-licenses: Apache-2.0, MIT, BSD-3-Clause, ISC, MPL-2.0
-          fail-on-severity: high
+      - name: Install packages
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install \
+            -r requirements.txt pip-licenses==5.5.5
+
+      - name: Display dependency licenses
+        run: |
+          .venv/bin/pip-licenses --format=markdown
+
+      - name: Enforce license policy
+        run: |
+          .venv/bin/pip-licenses --allow-only="Apache-2.0;MIT;MIT License;BSD-3-Clause;BSD License;ISC;MPL-2.0"
