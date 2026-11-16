@@ -1,0 +1,92 @@
+
+name: CIS 4.1.2 - Artifact Encryption
+
+on:
+  push:
+    branches: [main, dtk0106-patch-3]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  encrypt-artifact:
+    name: Encrypt and verify artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Generate sample artifact
+        shell: bash
+        run: |
+          mkdir -p output
+          echo "CIS 4.1.2 - Confidential artifact" > output/message.txt
+          test -s output/message.txt
+          echo "PASS: Original artifact created"
+
+      - name: Encrypt artifact using AES-256
+        shell: bash
+        env:
+          PASSPHRASE: ${{ secrets.ARTIFACT_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$PASSPHRASE" ]; then
+            echo "::error::Encryption secret is missing"
+            exit 1
+          fi
+
+          openssl enc -aes-256-cbc \
+            -pbkdf2 \
+            -iter 200000 \
+            -salt \
+            -in output/message.txt \
+            -out output/message.txt.enc \
+            -pass env:PASSPHRASE
+
+          test -s output/message.txt.enc
+
+          echo "PASS: Artifact encrypted successfully"
+          sha256sum output/message.txt.enc
+
+      - name: Verify encrypted artifact
+        shell: bash
+        env:
+          PASSPHRASE: ${{ secrets.ARTIFACT_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          openssl enc -d -aes-256-cbc \
+            -pbkdf2 \
+            -iter 200000 \
+            -in output/message.txt.enc \
+            -out "$RUNNER_TEMP/decrypted-message.txt" \
+            -pass env:PASSPHRASE
+
+          cmp output/message.txt \
+            "$RUNNER_TEMP/decrypted-message.txt"
+
+          echo "PASS: Decryption successful"
+          echo "PASS: Decrypted content matches original"
+
+      - name: Remove plaintext artifacts
+        shell: bash
+        run: |
+          rm -f output/message.txt
+          rm -f "$RUNNER_TEMP/decrypted-message.txt"
+
+          test ! -e output/message.txt
+
+          echo "PASS: Plaintext removed before distribution"
+
+      - name: Upload encrypted artifact only
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cis-encrypted-artifact-${{ github.run_id }}
+          path: output/message.txt.enc
+          if-no-files-found: error
+          retention-days: 7
