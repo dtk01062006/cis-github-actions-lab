@@ -31,7 +31,8 @@ jobs:
       - name: Display dependency licenses
         run: |
           .venv/bin/pip-licenses --format=markdown
-
+          
       - name: Enforce license policy
         run: |
-          .venv/bin/pip-licenses --allow-only="Apache-2.0;MIT;MIT License;BSD-3-Clause;BSD License;ISC;MPL-2.0"
+          .venv/bin/pip-licenses --allow-only="Apache-2.0;Apache Software License;MIT;MIT License;BSD-3-Clause;BSD License;ISC;MPL-2.0"
+
