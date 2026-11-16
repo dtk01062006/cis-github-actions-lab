@@ -12,5 +12,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Run code security scan
         run: echo "Scanning code for risks..."
