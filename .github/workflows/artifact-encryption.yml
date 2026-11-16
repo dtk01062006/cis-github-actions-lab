@@ -99,7 +99,6 @@ jobs:
 
     permissions:
       contents: read
-      actions: read
 
     steps:
       - name: Download encrypted artifact
