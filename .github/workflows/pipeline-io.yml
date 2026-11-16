@@ -1,3 +1,4 @@
+
 name: CIS - Pipeline Input Output
 
 on:
@@ -24,16 +25,20 @@ jobs:
       - name: Generate and validate output
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p output
+
           printf '%s\n' "$INPUT_MESSAGE" > "$OUTPUT_FILE"
           test -s "$OUTPUT_FILE"
           printf '%s\n' "$INPUT_MESSAGE" | cmp - "$OUTPUT_FILE"
+
           echo "PASS: output matches input"
           sha256sum "$OUTPUT_FILE"
 
       - name: Collect runner package inventory
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p runner-root/etc runner-root/var/lib/dpkg
           cp /etc/os-release runner-root/etc/os-release
           cp /var/lib/dpkg/status runner-root/var/lib/dpkg/status
@@ -59,26 +64,131 @@ jobs:
           data = json.loads(
               Path("output/runner-sbom.spdx.json").read_text()
           )
+
           packages = data.get("packages", [])
+
           assert data.get("spdxVersion", "").startswith("SPDX-")
           assert packages, "SBOM contains no packages"
 
           print("SBOM format:", data["spdxVersion"])
-          print("Scope: Ubuntu packages recorded in runner dpkg inventory")
+          print("Scope: Ubuntu runner dpkg inventory")
           print("Package count:", len(packages))
+
           for package in packages[:5]:
               print(
                   "Package:",
                   package.get("name"),
                   package.get("versionInfo", "unknown")
               )
-          print("PASS: SBOM JSON parsed and contains packages")
+
+          print("PASS: SBOM contains packages")
           PY
 
-      - name: Sign artifact and SBOM with temporary lab key
+      # CIS 4.4.1 - Artifact origin traceability
+      - name: Generate artifact origin metadata
         shell: bash
         run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import json
+          import hashlib
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          artifact = Path("output/message.txt")
+          sbom = Path("output/runner-sbom.spdx.json")
+
+          def sha256(path):
+              return hashlib.sha256(
+                  path.read_bytes()
+              ).hexdigest()
+
+          origin = {
+              "schema_version": "1.0",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "commit_sha": os.environ["GITHUB_SHA"],
+              "branch_or_ref": os.environ["GITHUB_REF"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "actor": os.environ["GITHUB_ACTOR"],
+              "created_at_utc": datetime.now(
+                  timezone.utc
+              ).isoformat(),
+              "run_url": (
+                  os.environ["GITHUB_SERVER_URL"]
+                  + "/"
+                  + os.environ["GITHUB_REPOSITORY"]
+                  + "/actions/runs/"
+                  + os.environ["GITHUB_RUN_ID"]
+              ),
+              "artifact": {
+                  "name": artifact.name,
+                  "sha256": sha256(artifact)
+              },
+              "sbom": {
+                  "name": sbom.name,
+                  "format": "SPDX-JSON",
+                  "scope": "Ubuntu runner dpkg inventory",
+                  "sha256": sha256(sbom)
+              }
+          }
+
+          Path("output/origin.json").write_text(
+              json.dumps(origin, indent=2, sort_keys=True)
+              + "\n",
+              encoding="utf-8"
+          )
+
+          print(json.dumps(origin, indent=2))
+          print("PASS: Artifact origin metadata generated")
+          PY
+
+      - name: Validate artifact origin metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import json
+          import hashlib
+          from pathlib import Path
+
+          origin = json.loads(
+              Path("output/origin.json").read_text()
+          )
+
+          assert origin["repository"] == os.environ["GITHUB_REPOSITORY"]
+          assert origin["commit_sha"] == os.environ["GITHUB_SHA"]
+          assert origin["run_id"] == os.environ["GITHUB_RUN_ID"]
+
+          for item, filename in [
+              ("artifact", "output/message.txt"),
+              ("sbom", "output/runner-sbom.spdx.json")
+          ]:
+              actual_hash = hashlib.sha256(
+                  Path(filename).read_bytes()
+              ).hexdigest()
+
+              assert origin[item]["sha256"] == actual_hash, (
+                  f"Hash mismatch: {filename}"
+              )
+
+              print("PASS: Origin hash verified for", filename)
+
+          print("PASS: Artifact origin metadata validated")
+          PY
+
+      - name: Sign artifact SBOM and origin metadata
+        shell: bash
+        run: |
+          set -euo pipefail
           umask 077
+
           KEY_FILE="$RUNNER_TEMP/lab-signing-key.pem"
           trap 'rm -f "$KEY_FILE"' EXIT
 
@@ -89,25 +199,37 @@ jobs:
           openssl pkey -in "$KEY_FILE" \
             -pubout -out output/lab-public-key.pem
 
-          for file in "$OUTPUT_FILE" output/runner-sbom.spdx.json; do
+          for file in \
+            "$OUTPUT_FILE" \
+            output/runner-sbom.spdx.json \
+            output/origin.json
+          do
             openssl dgst -sha256 \
               -sign "$KEY_FILE" \
               -out "$file.sig" "$file"
+
+            echo "PASS: Signed $file"
           done
 
-          echo "PASS: artifact and SBOM signed"
+          echo "PASS: Artifact SBOM and origin metadata signed"
 
       - name: Verify signatures and reject modified copies
         shell: bash
         run: |
-          for file in "$OUTPUT_FILE" output/runner-sbom.spdx.json; do
+          set -euo pipefail
+
+          for file in \
+            "$OUTPUT_FILE" \
+            output/runner-sbom.spdx.json \
+            output/origin.json
+          do
             echo "Verifying: $file"
 
             openssl dgst -sha256 \
               -verify output/lab-public-key.pem \
               -signature "$file.sig" "$file"
 
-            echo "PASS: original signature verified for $file"
+            echo "PASS: Original signature verified for $file"
 
             MODIFIED_FILE="$RUNNER_TEMP/$(basename "$file").modified"
             cp "$file" "$MODIFIED_FILE"
@@ -116,23 +238,26 @@ jobs:
             if openssl dgst -sha256 \
               -verify output/lab-public-key.pem \
               -signature "$file.sig" \
-              "$MODIFIED_FILE" >/dev/null 2>&1; then
+              "$MODIFIED_FILE" >/dev/null 2>&1
+            then
               echo "::error::Modified file passed verification: $file"
               exit 1
             fi
 
-            echo "PASS: modified copy rejected for $file"
+            echo "PASS: Modified copy rejected for $file"
           done
 
-      - name: Store signed artifact and SBOM
+      - name: Store signed artifact SBOM and origin
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pipeline-signed-output-${{ github.run_id }}
+          name: pipeline-origin-traceable-${{ github.run_id }}
           path: |
             output/message.txt
             output/message.txt.sig
             output/runner-sbom.spdx.json
             output/runner-sbom.spdx.json.sig
+            output/origin.json
+            output/origin.json.sig
             output/lab-public-key.pem
           if-no-files-found: error
           retention-days: 7
