@@ -1,0 +1,110 @@
+
+name: CIS 3.2.1 - Dependency Usage Policy
+
+on:
+  push:
+    branches: [main, dtk0106-patch-3]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  enforce-dependency-policy:
+    name: Enforce approved dependency policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Validate approved packages and versions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          def fail(message):
+              print(f"::error::{message}")
+              raise SystemExit(1)
+
+          policy = json.loads(
+              Path(".github/dependency-policy.json").read_text()
+          )
+
+          # Check Python dependencies
+          approved_python = policy["python"]
+          seen = set()
+
+          for line in Path("requirements.txt").read_text().splitlines():
+              value = line.split("#", 1)[0].strip()
+              if not value:
+                  continue
+
+              match = re.fullmatch(
+                  r"([A-Za-z0-9_.-]+)==([A-Za-z0-9][A-Za-z0-9_.!+-]*)",
+                  value
+              )
+
+              if not match:
+                  fail(f"Python dependency must be pinned: {value}")
+
+              name = re.sub(
+                  r"[-_.]+", "-", match.group(1)
+              ).lower()
+
+              version = match.group(2)
+
+              if name in seen:
+                  fail(f"Duplicate Python dependency: {name}")
+
+              seen.add(name)
+
+              if approved_python.get(name) != version:
+                  fail(f"Unapproved Python dependency: {value}")
+
+              print(f"PASS: Approved Python package {name}=={version}")
+
+          # Check npm dependencies
+          package = json.loads(Path("package.json").read_text())
+          approved_npm = policy["npm"]
+          seen_npm = set()
+
+          for section in (
+              "dependencies",
+              "devDependencies",
+              "optionalDependencies",
+              "peerDependencies"
+          ):
+              for name, version in package.get(section, {}).items():
+                  if name in seen_npm:
+                      fail(f"Duplicate npm dependency: {name}")
+
+                  seen_npm.add(name)
+
+                  if approved_npm.get(name) != version:
+                      fail(
+                          f"Unapproved npm dependency: "
+                          f"{name}@{version}"
+                      )
+
+                  print(
+                      f"PASS: Approved npm package "
+                      f"{name}@{version}"
+                  )
+
+          print("PASS: Dependency usage policy enforced")
+          PY
