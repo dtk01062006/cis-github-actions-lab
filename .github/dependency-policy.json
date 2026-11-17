@@ -1,0 +1,9 @@
+{
+  "policy_version": 1,
+  "python": {
+    "requests": "2.34.2"
+  },
+  "npm": {
+    "is-number": "7.0.0"
+  }
+}
