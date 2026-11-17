@@ -4,6 +4,6 @@
     "requests": "2.34.2"
   },
   "npm": {
-    "is-number": "7.0.0"
+    "is-number": "7.0.1"
   }
 }
